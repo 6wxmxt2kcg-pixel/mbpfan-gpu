@@ -29,6 +29,13 @@ extern int low_temp;
 extern int high_temp;
 extern int max_temp;
 
+/** GPU temperature thresholds (same meaning as the CPU ones above).
+ *  The CPU and GPU are controlled independently and the fan runs at
+ *  whichever of the two wants the higher speed. */
+extern int gpu_low_temp;
+extern int gpu_high_temp;
+extern int gpu_max_temp;
+
 /** Temperature polling interval
  *  Default value was 10 (seconds)
  */
@@ -54,6 +61,14 @@ void retrieve_settings(const char *settings_path, t_fans *fans);
  * Return a linked list of t_sensors (first temperature detected)
  */
 t_sensors *retrieve_sensors();
+
+/**
+ * Detect GPU temperature sensors (radeon / amdgpu hwmon devices under
+ * /sys/class/drm) and append them to the list pointed to by head.
+ * Returns the number of sensors added (0 is not an error: the driver
+ * may not be loaded yet).
+ */
+int retrieve_gpu_sensors(t_sensors **head);
 
 /**
  * Given a linked list of t_sensors, refresh their detected
@@ -90,9 +105,14 @@ void set_fan_speed(t_fans *fan, int speed);
  */
 void set_fan_minimum_speed(t_fans *fans);
 /**
- *  Return maximum CPU temp in degrees
+ *  Return maximum CPU temp in degrees (GPU sensors are ignored)
  */
 unsigned short get_temp(t_sensors *sensors);
+
+/**
+ *  Return maximum GPU temp in degrees, or -1 if there are no GPU sensors
+ */
+int get_gpu_temp(t_sensors *sensors);
 
 /**
  * Check if user has proper access and that required

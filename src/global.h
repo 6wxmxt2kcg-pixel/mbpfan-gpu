@@ -14,6 +14,7 @@ struct s_sensors {
     FILE *file;
     char *path;
     unsigned int temperature;
+    int is_gpu;  // 0 = CPU (coretemp), 1 = GPU (radeon/amdgpu hwmon)
     struct s_sensors *next;
 };
 
