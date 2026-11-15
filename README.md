@@ -1,3 +1,27 @@
+# mbpfan-gpu
+
+> **This is a fork of [linux-on-mac/mbpfan](https://github.com/linux-on-mac/mbpfan)**
+> that adds GPU-aware fan control for Intel Macs with AMD GPUs. For installation
+> and general documentation, see the upstream README below, which is unchanged.
+
+**What's different:** stock mbpfan controls the fan from CPU temperature only. This
+fork also reads AMD GPU temperatures (radeon/amdgpu hwmon) and runs separate CPU and
+GPU ramps; the fan follows whichever asks for more. New settings: `gpu_low_temp`,
+`gpu_high_temp`, `gpu_max_temp`. If no GPU sensor is found it behaves like upstream
+(CPU only) and keeps looking. It also retakes manual fan control if the fan is put
+back in automatic mode.
+
+**Status:** developed and tested only on a 2013 Mac Pro (one fan, two AMD FirePro D700
+GPUs) running Proxmox VE. The default GPU thresholds are starting points for that
+machine, so tune them for yours. Nvidia GPUs are not read, and like upstream it needs
+the applesmc and coretemp modules, so Intel Macs only.
+
+**AI assistance:** the changes in this fork were developed with AI assistance from
+Claude (Anthropic) and tested on real hardware by the maintainer. Commits made with
+Claude's help carry a `Co-Authored-By` trailer.
+
+---
+
 # mbpfan
 
 [![Build Status](https://travis-ci.org/dgraziotin/mbpfan.svg?branch=master)](https://travis-ci.org/dgraziotin/mbpfan)
