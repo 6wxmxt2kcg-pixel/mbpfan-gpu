@@ -7,12 +7,16 @@
 **What's different:** stock mbpfan controls the fan from CPU temperature only. This
 fork also reads AMD GPU temperatures (radeon/amdgpu hwmon) and runs separate CPU and
 GPU ramps; the fan follows whichever asks for more. New settings: `gpu_low_temp`,
-`gpu_high_temp`, `gpu_max_temp`. If no GPU sensor is found it behaves like upstream
-(CPU only) and keeps looking. It also retakes manual fan control if the fan is put
-back in automatic mode.
+`gpu_high_temp`, `gpu_max_temp`. If no GPU sensor is found it controls on CPU
+temperature only, and it keeps scanning, so a GPU that appears late, or goes away and
+comes back, is picked up. It also retakes manual fan control if the fan is put back in
+automatic mode, and a reload (SIGHUP) with invalid thresholds keeps the previous ones.
+The CPU ramp differs from upstream in one detail: the step size is no longer rounded
+down to a whole RPM, so the fan runs slightly faster mid-ramp. The version string is
+`2.4.0-gpu`.
 
 **Status:** developed and tested only on a 2013 Mac Pro (one fan, two AMD FirePro D700
-GPUs) running Proxmox VE. The default GPU thresholds are starting points for that
+GPUs) running Proxmox VE. The default GPU thresholds are the ones tested on that
 machine, so tune them for yours. Nvidia GPUs are not read, and like upstream it needs
 the applesmc and coretemp modules, so Intel Macs only.
 

@@ -4,7 +4,7 @@
 #include <stdio.h>
 
 #define PROGRAM_NAME "mbpfan"
-#define PROGRAM_VERSION "2.4.0"
+#define PROGRAM_VERSION "2.4.0-gpu"
 #define PROGRAM_PID "/run/mbpfan.pid"
 
 extern int daemonize;
@@ -24,8 +24,6 @@ struct s_fans {
     char *label;
     char *fan_output_path;
     char *fan_manual_path;
-    int step_up;
-    int step_down;
     int fan_id;
     int old_speed;
     int fan_max_speed;

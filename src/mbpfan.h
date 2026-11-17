@@ -64,15 +64,18 @@ t_sensors *retrieve_sensors();
 
 /**
  * Detect GPU temperature sensors (radeon / amdgpu hwmon devices under
- * /sys/class/drm) and append them to the list pointed to by head.
- * Returns the number of sensors added (0 is not an error: the driver
- * may not be loaded yet).
+ * /sys/class/drm) and add them to the list pointed to by head. Safe to
+ * call repeatedly: sensors already in use are left alone, and one that
+ * refresh_sensors() dropped is reopened if it can be read again.
+ * Returns the number of sensors newly in use (0 is not an error: the
+ * driver may not be loaded yet).
  */
 int retrieve_gpu_sensors(t_sensors **head);
 
 /**
  * Given a linked list of t_sensors, refresh their detected
- * temperature
+ * temperature. A GPU sensor that can no longer be read is dropped
+ * (its file is closed and it is ignored) until it is detected again.
  */
 t_sensors *refresh_sensors(t_sensors *sensors);
 
@@ -108,11 +111,6 @@ void set_fan_minimum_speed(t_fans *fans);
  *  Return maximum CPU temp in degrees (GPU sensors are ignored)
  */
 unsigned short get_temp(t_sensors *sensors);
-
-/**
- *  Return maximum GPU temp in degrees, or -1 if there are no GPU sensors
- */
-int get_gpu_temp(t_sensors *sensors);
 
 /**
  * Check if user has proper access and that required

@@ -58,12 +58,12 @@
 #define CORETEMP_PATH "/sys/devices/platform/coretemp.0"
 #define APPLESMC_PATH "/sys/devices/platform/applesmc.768"
 #define ALT_APPLESMC_PATH "/sys/bus/acpi/drivers/applesmc"
-#ifndef DRM_CLASS_PATH
 #define DRM_CLASS_PATH "/sys/class/drm"
-#endif
 
-/* seconds between GPU sensor scans while none have been found yet
- * (the GPU driver may load after mbpfan starts) */
+/* seconds between scans for GPU sensors. The scan repeats for as long as
+ * mbpfan runs: the GPU driver may load after mbpfan starts, it may bring
+ * up one card before another, and a card can go away and come back
+ * (driver reload, passthrough to a VM). */
 #define GPU_RESCAN_INTERVAL 30
 
 /* temperature thresholds
@@ -74,11 +74,11 @@ int low_temp = 63;  // try ranges 55-63
 int high_temp = 66; // try ranges 58-66
 int max_temp = 86;  // do not set it > 90
 
-/* same thresholds for the GPU(s). Starting points for a 2013 Mac Pro
- * (FirePro D300/D500/D700); tune them for your machine. */
-int gpu_low_temp = 65;
-int gpu_high_temp = 72;
-int gpu_max_temp = 92;
+/* same thresholds for the GPU(s). These are the values tested on a
+ * 2013 Mac Pro (two FirePro D700); tune them for your machine. */
+int gpu_low_temp = 53;
+int gpu_high_temp = 59;
+int gpu_max_temp = 80;
 
 // maximum number of processors etc supported
 #define NUM_PROCESSORS 6
@@ -289,40 +289,67 @@ static void trim_trailing_whitespace(char *str)
     }
 }
 
-/* Append a sensor read from `path` to the list. Returns NULL (and adds
- * nothing) if the file can't be opened. */
-static t_sensors *append_sensor(t_sensors **head, const char *path, int is_gpu)
+static t_sensors *find_sensor(t_sensors *head, const char *path)
 {
+    for (t_sensors *tmp = head; tmp != NULL; tmp = tmp->next) {
+        if (strcmp(tmp->path, path) == 0) {
+            return tmp;
+        }
+    }
+
+    return NULL;
+}
+
+/* Start using the GPU sensor at `path`: append it to the list, or reopen
+ * it if it is already listed but refresh_sensors() dropped it. Returns 1
+ * if the sensor is newly in use, 0 if it already was or cannot be read
+ * right now (a powered-down GPU, for example; a later scan tries again). */
+static int add_gpu_sensor(t_sensors **head, const char *path)
+{
+    t_sensors *s = find_sensor(*head, path);
+    if (s != NULL && s->file != NULL) {
+        return 0;
+    }
+
     FILE *file = fopen(path, "r");
     if (file == NULL) {
-        return NULL;
+        return 0;
     }
 
-    t_sensors *s = (t_sensors *)malloc(sizeof(t_sensors));
-    if (s == NULL) {
+    unsigned int temperature;
+    if (fscanf(file, "%u", &temperature) != 1) {
         fclose(file);
-        return NULL;
+        return 0;
     }
 
-    s->path = strdup(path);
-    s->file = file;
-    s->is_gpu = is_gpu;
-    s->next = NULL;
-    if (fscanf(file, "%u", &s->temperature) != 1) {
-        s->temperature = 0;
-    }
-
-    if (*head == NULL) {
-        *head = s;
-    } else {
-        t_sensors *tmp = *head;
-        while (tmp->next != NULL) {
-            tmp = tmp->next;
+    if (s == NULL) {
+        s = (t_sensors *)malloc(sizeof(t_sensors));
+        char *path_copy = strdup(path);
+        if (s == NULL || path_copy == NULL) {
+            free(s);
+            free(path_copy);
+            fclose(file);
+            return 0;
         }
-        tmp->next = s;
+
+        s->path = path_copy;
+        s->is_gpu = 1;
+        s->next = NULL;
+
+        if (*head == NULL) {
+            *head = s;
+        } else {
+            t_sensors *tmp = *head;
+            while (tmp->next != NULL) {
+                tmp = tmp->next;
+            }
+            tmp->next = s;
+        }
     }
 
-    return s;
+    s->file = file;
+    s->temperature = temperature;
+    return 1;
 }
 
 int retrieve_gpu_sensors(t_sensors **head)
@@ -337,11 +364,14 @@ int retrieve_gpu_sensors(t_sensors **head)
     struct dirent *ent;
     while ((ent = readdir(drm_dir)) != NULL) {
         /* only cardN; skip renderD*, and connectors like card0-DP-1 */
-        if (strncmp(ent->d_name, "card", 4) != 0) continue;
-        if (strchr(ent->d_name, '-') != NULL) continue;
+        if (strncmp(ent->d_name, "card", 4) != 0 || strchr(ent->d_name, '-') != NULL) {
+            continue;
+        }
 
         char *hwmon_base = smprintf("%s/%s/device/hwmon", DRM_CLASS_PATH, ent->d_name);
-        if (hwmon_base == NULL) continue;
+        if (hwmon_base == NULL) {
+            continue;
+        }
 
         DIR *hw_dir = opendir(hwmon_base);
         if (hw_dir == NULL) {
@@ -351,7 +381,9 @@ int retrieve_gpu_sensors(t_sensors **head)
 
         struct dirent *hent;
         while ((hent = readdir(hw_dir)) != NULL) {
-            if (strncmp(hent->d_name, "hwmon", 5) != 0) continue;
+            if (strncmp(hent->d_name, "hwmon", 5) != 0) {
+                continue;
+            }
 
             /* only accept the AMD drivers; anything else is not a sensor
              * we know how to interpret */
@@ -363,15 +395,17 @@ int retrieve_gpu_sensors(t_sensors **head)
                 free(name_path);
             }
             trim_trailing_whitespace(name);
-            if (strcmp(name, "amdgpu") != 0 && strcmp(name, "radeon") != 0) continue;
+            if (strcmp(name, "amdgpu") != 0 && strcmp(name, "radeon") != 0) {
+                continue;
+            }
 
             /* temp1 is the edge/core temperature on the GCN cards */
             char *temp_path = smprintf("%s/%s/temp1_input", hwmon_base, hent->d_name);
             if (temp_path != NULL) {
-                if (append_sensor(head, temp_path, 1) != NULL) {
+                if (add_gpu_sensor(head, temp_path)) {
                     added++;
                     if (verbose) {
-                        mbp_log(LOG_INFO, "Found GPU sensor (%s) at %s", name, temp_path);
+                        mbp_log(LOG_INFO, "Using GPU sensor (%s) at %s", name, temp_path);
                     }
                 }
                 free(temp_path);
@@ -503,7 +537,8 @@ static void set_fans_mode(t_fans *fans, int mode)
 
 /* If something (the SMC, another tool, a manual `echo 0`) put this fan back
  * in automatic mode, our speed writes are silently ignored. Detect that and
- * retake manual control. Returns 1 if it had to. */
+ * retake manual control. Returns 1 if it retook control, -1 if it tried and
+ * could not, 0 if there was nothing to do. */
 static int ensure_manual_mode(t_fans *fan)
 {
     if (read_value(fan->fan_manual_path) != 0) {
@@ -511,9 +546,13 @@ static int ensure_manual_mode(t_fans *fan)
     }
 
     FILE *file = fopen(fan->fan_manual_path, "w");
-    if (file != NULL) {
-        fprintf(file, "1");
-        fclose(file);
+    if (file == NULL) {
+        return -1;
+    }
+
+    int write_failed = fprintf(file, "1") < 0;
+    if (fclose(file) != 0 || write_failed) {
+        return -1;
     }
 
     /* force the next set_fan_speed() to actually write */
@@ -544,6 +583,14 @@ t_sensors *refresh_sensors(t_sensors *sensors)
             if (len >= 0) {
                 buf[len] = '\0';
                 tmp->temperature = strtod(buf, NULL);
+            } else if (tmp->is_gpu) {
+                /* The GPU went away (driver unloaded, card handed to a VM
+                 * or powered down). Stop using the sensor rather than act
+                 * on a stale temperature; retrieve_gpu_sensors() picks it
+                 * up again if it comes back. */
+                mbp_log(LOG_WARNING, "Lost GPU sensor at %s", tmp->path);
+                fclose(tmp->file);
+                tmp->file = NULL;
             }
         }
 
@@ -576,15 +623,19 @@ void set_fan_minimum_speed(t_fans *fans)
         tmp = tmp->next;
     }
 }
-/* Highest temperature (degrees C) among sensors of one kind, from their
- * last refresh. -1 if there are none. */
+
+/* Highest temperature (degrees C) among the sensors of one kind that are
+ * in use, from their last refresh. -1 if there are none. */
 static int group_temp(t_sensors *sensors, int gpu)
 {
     int found = 0;
     unsigned int temp = 0;
 
     for (t_sensors *tmp = sensors; tmp != NULL; tmp = tmp->next) {
-        if (tmp->is_gpu != gpu) continue;
+        if (tmp->is_gpu != gpu || tmp->file == NULL) {
+            continue;
+        }
+
         found = 1;
         temp = max(temp, tmp->temperature);
     }
@@ -597,12 +648,6 @@ unsigned short get_temp(t_sensors *sensors)
     sensors = refresh_sensors(sensors);
     int temp = group_temp(sensors, 0);
     return temp < 0 ? 0 : temp;
-}
-
-int get_gpu_temp(t_sensors *sensors)
-{
-    sensors = refresh_sensors(sensors);
-    return group_temp(sensors, 1);
 }
 
 /* One independent controller (CPU or GPU).
@@ -823,6 +868,11 @@ int get_max_mhz(void)
     return max_mhz;
 }
 
+static bool temps_valid(int low_t, int high_t, int max_t)
+{
+    return low_t <= high_t && high_t <= max_t;
+}
+
 void mbpfan()
 {
     int old_cpu, new_cpu, old_gpu, new_gpu, fan_speed;
@@ -834,6 +884,7 @@ void mbpfan()
      * heating/cooling trend logic. */
     enum { CPU_CTRL = 0, GPU_CTRL = 1, NUM_CTRL = 2 };
     int ctrl_speed[NUM_CTRL][NUM_FANS];
+    bool manual_mode_failed[NUM_FANS] = { false };
 
     sensors = retrieve_sensors();      /* CPU sensors; exits if none */
     int gpu_sensors = retrieve_gpu_sensors(&sensors);
@@ -852,18 +903,20 @@ void mbpfan()
         fan = fan->next;
     }
 
-    if (low_temp > high_temp || high_temp > max_temp) {
+    if (!temps_valid(low_temp, high_temp, max_temp)) {
         mbp_log(LOG_ERR, "Invalid temperatures: %d %d %d", low_temp, high_temp, max_temp);
         exit(EXIT_FAILURE);
     }
 
-    if (gpu_low_temp > gpu_high_temp || gpu_high_temp > gpu_max_temp) {
+    if (!temps_valid(gpu_low_temp, gpu_high_temp, gpu_max_temp)) {
         mbp_log(LOG_ERR, "Invalid GPU temperatures: %d %d %d", gpu_low_temp, gpu_high_temp, gpu_max_temp);
         exit(EXIT_FAILURE);
     }
 
     if (gpu_sensors == 0) {
         mbp_log(LOG_WARNING, "No GPU sensors found yet; controlling on CPU temperature only (will keep looking)");
+    } else {
+        mbp_log(LOG_INFO, "Found %d GPU sensor(s); controlling on CPU and GPU", gpu_sensors);
     }
 
     set_fans_man(fans);
@@ -892,20 +945,38 @@ recalibrate:
 
         if (do_reload) {
             syslog(LOG_WARNING, "Received SIGHUP signal.");
+            /* The fans are in manual mode by now, so bad values must not
+             * end the daemon: keep running on the previous thresholds. */
+            int prev_low = low_temp, prev_high = high_temp, prev_max = max_temp;
+            int prev_gpu_low = gpu_low_temp, prev_gpu_high = gpu_high_temp, prev_gpu_max = gpu_max_temp;
+
             retrieve_settings(NULL, fans);
-            if (gpu_low_temp > gpu_high_temp || gpu_high_temp > gpu_max_temp) {
-                mbp_log(LOG_ERR, "Invalid GPU temperatures after reload: %d %d %d", gpu_low_temp, gpu_high_temp, gpu_max_temp);
-                exit(EXIT_FAILURE);
+
+            if (!temps_valid(low_temp, high_temp, max_temp)) {
+                mbp_log(LOG_ERR, "Invalid temperatures in reloaded settings: %d %d %d; keeping %d %d %d",
+                        low_temp, high_temp, max_temp, prev_low, prev_high, prev_max);
+                low_temp = prev_low;
+                high_temp = prev_high;
+                max_temp = prev_max;
             }
+
+            if (!temps_valid(gpu_low_temp, gpu_high_temp, gpu_max_temp)) {
+                mbp_log(LOG_ERR, "Invalid GPU temperatures in reloaded settings: %d %d %d; keeping %d %d %d",
+                        gpu_low_temp, gpu_high_temp, gpu_max_temp, prev_gpu_low, prev_gpu_high, prev_gpu_max);
+                gpu_low_temp = prev_gpu_low;
+                gpu_high_temp = prev_gpu_high;
+                gpu_max_temp = prev_gpu_max;
+            }
+
             do_reload = 0;
         }
 
-        /* GPU driver may have loaded after we started */
-        if (gpu_sensors == 0 && time(NULL) - last_gpu_scan >= GPU_RESCAN_INTERVAL) {
+        /* pick up GPU sensors that appeared, or came back, since the last scan */
+        if (time(NULL) - last_gpu_scan >= GPU_RESCAN_INTERVAL) {
             last_gpu_scan = time(NULL);
             gpu_sensors = retrieve_gpu_sensors(&sensors);
             if (gpu_sensors > 0) {
-                mbp_log(LOG_INFO, "Found %d GPU sensor(s); now controlling on CPU and GPU", gpu_sensors);
+                mbp_log(LOG_INFO, "Found %d more GPU sensor(s)", gpu_sensors);
             }
         }
 
@@ -915,7 +986,7 @@ recalibrate:
         new_cpu = group_temp(sensors, 0);
         new_gpu = group_temp(sensors, 1);
 
-        if (old_gpu < 0) {
+        if (old_gpu < 0 && new_gpu >= 0) {
             /* GPU just appeared: no trend yet, and it starts at minimum */
             old_gpu = new_gpu;
             for (fan = fans; fan != NULL; fan = fan->next) {
@@ -928,8 +999,14 @@ recalibrate:
         while (fan != NULL) {
             int id = fan->fan_id;
 
-            if (ensure_manual_mode(fan)) {
+            int retaken = ensure_manual_mode(fan);
+            if (retaken > 0) {
                 mbp_log(LOG_WARNING, "Fan %s was back in automatic mode; retook manual control", fan->label);
+                manual_mode_failed[id] = false;
+            } else if (retaken < 0 && !manual_mode_failed[id]) {
+                /* say it once, not on every poll */
+                mbp_log(LOG_ERR, "Fan %s is in automatic mode and manual control could not be retaken", fan->label);
+                manual_mode_failed[id] = true;
             }
 
             ctrl_speed[CPU_CTRL][id] = ramp_speed(fan, ctrl_speed[CPU_CTRL][id],
